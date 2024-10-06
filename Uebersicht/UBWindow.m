@@ -30,7 +30,7 @@
         backing: NSBackingStoreBuffered
         defer: NO
     ];
-    
+
     if (self) {
         type = windowType;
         [self setBackgroundColor:[NSColor clearColor]];
@@ -47,7 +47,7 @@
         [self setReleasedWhenClosed:NO];
         [self setWindowType:windowType];
         [self setIgnoresMouseEvents:YES];
-        
+
         webViewController = [[UBWebViewController alloc]
             initWithFrame: [self frame]
         ];
@@ -60,6 +60,11 @@
 - (void)loadUrl:(NSURL*)url
 {
     [webViewController load:url];
+}
+
+- (void)setToken:(NSString*)token
+{
+    [webViewController setToken:token];
 }
 
 - (void)reload

@@ -14,6 +14,7 @@
 
 @implementation UBWebViewController {
     NSURL* url;
+    NSString *token;
 }
 
 @synthesize view;
@@ -21,11 +22,11 @@
 - (id)initWithFrame:(NSRect)frame
 {
      self = [super init];
-    
+
      if (self) {
         view = [self buildWebView:frame];
      }
-    
+
      return self;
 }
 
@@ -44,7 +45,14 @@
         default:
             break;
     }
-    [(WKWebView*)view loadRequest:[NSURLRequest requestWithURL: url]];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setValue:@"Übersicht" forHTTPHeaderField:@"Origin"];
+    [(WKWebView*)view loadRequest:request];
+}
+
+- (void)setToken:(NSString*)newToken
+{
+    token = newToken;
 }
 
 - (void)reload
@@ -75,7 +83,7 @@
         forKey: @"developerExtrasEnabled"
     ];
     webView.navigationDelegate = (id<WKNavigationDelegate>)self;
-    
+
     return webView;
 }
 
@@ -100,13 +108,13 @@
     WKUserContentController* ucController = [
         [WKUserContentController alloc] init
     ];
-    
+
     // geolocation
     [ucController
         addScriptMessageHandler: [[UBLocation alloc] init]
         name: @"geolocation"
     ];
-    
+
     NSString* geolocationScript = [NSString
         stringWithContentsOfURL: [[NSBundle mainBundle]
             URLForResource: @"geolocation"
@@ -120,7 +128,7 @@
         injectionTime: WKUserScriptInjectionTimeAtDocumentStart
         forMainFrameOnly: YES
     ]];
-    
+
     // hack to make old widgets relying on process.argv[0] work
     NSString* processArgvHack = [NSString
         stringWithFormat:@"process = {argv: ['%@'.replace(/ /g, '\\\\ ')]}",
@@ -131,12 +139,12 @@
         injectionTime: WKUserScriptInjectionTimeAtDocumentStart
         forMainFrameOnly: YES
     ]];
-    
+
     [ucController addScriptMessageHandler: self name: @"uebersicht"];
-    
+
     WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
     config.userContentController = ucController;
-    
+
     return config;
 }
 
@@ -181,7 +189,16 @@
     if (!action.targetFrame.mainFrame) {
         handler(WKNavigationActionPolicyAllow);
     } else if ([action.request.URL isEqual: url]) {
-        handler(WKNavigationActionPolicyAllow);
+        NSHTTPCookie *c = [NSHTTPCookie cookieWithProperties:@{
+            NSHTTPCookieDomain: url.host,
+            NSHTTPCookiePath: @"/",
+            NSHTTPCookieName: @"token",
+            NSHTTPCookieValue: token,
+            @"HttpOnly": @"TRUE",
+        }];
+        [theWebView.configuration.websiteDataStore.httpCookieStore setCookie:c completionHandler:^{
+            handler(WKNavigationActionPolicyAllow);
+        }];
     } else if (action.navigationType == WKNavigationTypeLinkActivated) {
         [[NSWorkspace sharedWorkspace] openURL:action.request.URL];
         handler(WKNavigationActionPolicyCancel);

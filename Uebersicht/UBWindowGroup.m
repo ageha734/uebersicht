@@ -25,7 +25,7 @@
             ];
             [foreground orderFront:self];
         }
-        
+
         background = [[UBWindow alloc]
             initWithWindowType: interactionEnabled
                 ? UBWindowTypeBackground
@@ -52,6 +52,12 @@
 {
     [foreground loadUrl: url];
     [background loadUrl: url];
+}
+
+- (void)setToken:(NSString*)token
+{
+    [foreground setToken:token];
+    [background setToken:token];
 }
 
 - (void)setFrame:(NSRect)frame display:(BOOL)flag

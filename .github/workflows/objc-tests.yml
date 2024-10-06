@@ -1,0 +1,27 @@
+name: Objective-C Tests
+
+on:
+    push:
+        branches:
+            - main
+    pull_request:
+        branches:
+            - main
+
+jobs:
+    build:
+        runs-on: macos-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Xcode
+              run: sudo xcode-select -switch /Applications/Xcode.app
+
+            - name: Install dependencies (CocoaPods)
+              run: pod install
+              working-directory: ./YourProjectDirectory
+
+            - name: Build and test
+              run: xcodebuild test -workspace YourProject.xcworkspace -scheme YourSchemeName -sdk macosx -destination 'platform=macOS'

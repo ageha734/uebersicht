@@ -12,6 +12,8 @@ Settings = require('./Settings')
 StateServer = require('./StateServer')
 ensureSameHost = require('./ensureSameHost')
 ensureSameOrigin = require('./ensureSameOrigin')
+ensureToken = require('./ensureToken')
+validateTokenCookie = require('./validateTokenCookie')
 disallowIFraming = require('./disallowIFraming')
 CommandServer = require('./command_server.coffee')
 serveWidgets = require('./serveWidgets')
@@ -25,7 +27,7 @@ resolveWidget = require('./resolveWidget')
 dispatchToRemote = require('./dispatch')
 listenToRemote = require('./listen')
 
-module.exports = (port, widgetPath, settingsPath, publicPath, options, callback) ->
+module.exports = (port, widgetPath, settingsPath, publicPath, token, options, callback) ->
   options ||= {}
 
   # global store for app state
@@ -45,7 +47,7 @@ module.exports = (port, widgetPath, settingsPath, publicPath, options, callback)
 
   bundler = WidgetBundler(widgetPath)
   # TODO: use a stream/generator/promise pattern instead of nested callbacks
-  stopWatchingDir = watchDir(widgetPath, (fileEvent) ->
+  watcher = watchDir(widgetPath, (fileEvent) ->
     if (fileEvent.filePath.replace(fileEvent.rootPath, '') == '/main.css')
       dispatchToRemote({type: 'MASTER_STYLE_CHANGED'})
       return
@@ -77,6 +79,7 @@ module.exports = (port, widgetPath, settingsPath, publicPath, options, callback)
     .use(disallowIFraming)
     .use(ensureSameHost(allowedHost))
     .use(ensureSameOrigin(allowedOrigin))
+    .use(ensureToken(token, options.disableToken))
     .use(CommandServer(widgetPath, options.loginShell))
     .use(StateServer(store))
     .use(serveWidgets(bundler, widgetPath))
@@ -87,22 +90,26 @@ module.exports = (port, widgetPath, settingsPath, publicPath, options, callback)
 
   server = http.createServer(middleware)
   server.keepAliveTimeout = 35000
-  server.listen port, host, (err) ->
-    try
-      return server.emit('error', err) if err
-      messageBus = MessageBus(
-        server: server,
-        verifyClient: (info) ->
-          info.req.headers.host == allowedHost && (info.origin == allowedOrigin || info.origin == 'Übersicht')
-      )
-      sharedSocket.open("ws://#{host}:#{port}")
-      callback?()
-    catch e
-      server.emit('error', e)
+  watcher.replay ->
+    server.listen port, host, (err) ->
+      try
+        return server.emit('error', err) if err
+        messageBus = MessageBus(
+          server: server,
+          verifyClient: (info) ->
+            originOkay = info.origin == allowedOrigin || info.origin == 'Übersicht'
+            if options.disableToken
+              return originOkay
+            originOkay && validateTokenCookie(token, info.req.headers.cookie)
+            )
+        sharedSocket.open("ws://#{host}:#{port}", token)
+        callback?()
+      catch e
+        server.emit('error', e)
 
   # api
   close: (cb) ->
-    stopWatchingDir()
+    watcher.close()
     bundler.close()
     server.close()
     sharedSocket.close()

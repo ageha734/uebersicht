@@ -31,18 +31,20 @@
 
 - (void)updateWindows:(NSDictionary*)screens
               baseUrl:(NSURL*)baseUrl
+              token:(NSString*)token
    interactionEnabled:(Boolean)interactionEnabled
          forceRefresh:(Boolean)forceRefresh
 {
     NSMutableArray* obsoleteScreens = [[windows allKeys] mutableCopy];
     UBWindowGroup* windowGroup;
-    
+
     for(NSNumber* screenId in screens) {
         if (![windows objectForKey:screenId]) {
             windowGroup = [[UBWindowGroup alloc]
                 initWithInteractionEnabled: interactionEnabled
             ];
             [windows setObject:windowGroup forKey:screenId];
+            [windowGroup setToken:token];
             [windowGroup loadUrl: [self screenUrl:screenId baseUrl:baseUrl]];
         } else {
             windowGroup = windows[screenId];
@@ -50,27 +52,27 @@
                 [windowGroup reload];
             }
         }
-        
+
         [windowGroup setFrame:[self screenRect:screenId] display:YES];
         [obsoleteScreens removeObject:screenId];
     }
-    
+
     for (NSNumber* screenId in obsoleteScreens) {
         [windows[screenId] close];
         [windows removeObjectForKey:screenId];
     }
-    
+
     NSLog(@"using %lu screens", (unsigned long)[windows count]);
 }
 
 - (NSRect)screenRect:(NSNumber*)screenId
 {
     NSScreen* screen = [self getNSScreen:screenId];
-    
+
     CGFloat auxiliaryHeight = screen.auxiliaryTopLeftArea.size.height;
     CGFloat windowHeight = screen.visibleFrame.size.height +
         (screen.visibleFrame.origin.y - screen.frame.origin.y);
-    
+
     // If the remaining visible height is exactly the auxiliaryHeight, the menu
     // bar is hidden. There seems to be no other way to dedect this reliably
     if (screen.frame.size.height - windowHeight == auxiliaryHeight) {
@@ -92,7 +94,7 @@
             return screen;
         }
     };
-    
+
     return nil;
 }
 
@@ -118,7 +120,7 @@
     NSWindow* window;
     window = [(UBWindowGroup*)windows[screenId] foreground];
     if (window) [self showDebugConsoleForWindow: window];
-    
+
     window = [(UBWindowGroup*)windows[screenId] background];
     if (window) [self showDebugConsoleForWindow: window];
 }
@@ -127,7 +129,7 @@
 {
     WKPageRef page = NULL;
     SEL pageForTesting = @selector(_pageForTesting);
-    
+
     if ([window.contentView.subviews[0] isKindOfClass:[WKView class]]) {
         WKView* webview = window.contentView.subviews[0];
         page = webview.pageRef;
@@ -136,12 +138,12 @@
             performSelector: pageForTesting
         ]);
     }
-    
+
     if (page) {
         WKInspectorRef inspector = WKPageGetInspector(page);
 
         [NSApp activateIgnoringOtherApps:YES];
-        
+
         WKInspectorShowConsole(inspector);
         [self
             performSelector: @selector(detachInspector:)

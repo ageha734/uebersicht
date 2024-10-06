@@ -19,8 +19,6 @@
 #import "UBWebSocket.h"
 #import "UBWindowsController.h"
 
-int const PORT = 41416;
-
 @implementation UBAppDelegate {
     NSStatusItem* statusBarItem;
     NSTask* widgetServer;
@@ -29,13 +27,17 @@ int const PORT = 41416;
     UBWindowsController* windowsController;
     BOOL shuttingDown;
     BOOL keepServerAlive;
+    int port;
     int portOffset;
     UBWidgetsStore* widgetsStore;
     UBWidgetsController* widgetsController;
     BOOL needsRefresh;
+    NSString *token;
 }
 
 @synthesize statusBarMenu;
+
+static const uint kTokenLength256Bits = 32;
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification
 {
@@ -49,15 +51,15 @@ int const PORT = 41416;
     // spawning the server, like system() or popen() have the same problem.
     // So, hit em with a hammer :(
     system("killall -m node-");
-    
+
     widgetsStore = [[UBWidgetsStore alloc] init];
 
     screensController = [[UBScreensController alloc]
         initWithChangeListener:self
     ];
-    
+
     windowsController = [[UBWindowsController alloc] init];
-    
+
     widgetsController = [[UBWidgetsController alloc]
         initWithMenu: statusBarMenu
         widgets: widgetsStore
@@ -67,13 +69,13 @@ int const PORT = 41416;
     [widgetsStore onChange: ^(NSDictionary* widgets) {
         [self->widgetsController render];
     }];
-    
+
     // make sure notifcations always show
     NSUserNotificationCenter* unc = [NSUserNotificationCenter
         defaultUserNotificationCenter
     ];
     unc.delegate = self;
-    
+
 
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver: self
@@ -81,62 +83,88 @@ int const PORT = 41416;
         name: NSWorkspaceDidWakeNotification
         object: nil
     ];
-    
+
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver: self
         selector: @selector(workspaceChanged:)
         name: NSWorkspaceActiveSpaceDidChangeNotification
         object: nil
     ];
-    
+
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver: self
         selector: @selector(loginSessionBecameActive:)
         name: NSWorkspaceSessionDidBecomeActiveNotification
         object: nil
     ];
- 
+
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver: self
         selector: @selector(loginSessionResigned:)
         name: NSWorkspaceSessionDidResignActiveNotification
         object: nil
     ];
-    
+
     // start server and load webview
+    port = arc4random_uniform(20000) + 41416;
     portOffset = 0;
     [self startUp];
-    
+
     [self listenToWallpaperChanges];
 }
 
-- (NSDictionary*)fetchState
+- (void)fetchState:(void (^)(NSDictionary*))callback
 {
+    [[UBWebSocket sharedSocket] open:[self serverUrl:@"ws"]
+                               token:token];
+
     NSURL *urlPath = [[self serverUrl:@"http"] URLByAppendingPathComponent: @"state/"];
-    NSData *jsonData = [NSData dataWithContentsOfURL:urlPath];
-    NSError *error = nil;
-    NSDictionary *dataDictionary = [NSJSONSerialization
-        JSONObjectWithData: jsonData
-        options: NSJSONReadingMutableContainers
-        error: &error
-    ];
-    if (error) NSLog(@"%@", error);
-    return dataDictionary;
+    NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:urlPath];
+    [request setValue:@"Übersicht" forHTTPHeaderField:@"Origin"];
+    [request setValue:[NSString stringWithFormat:@"token=%@", token] forHTTPHeaderField:@"Cookie"];
+    NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            NSLog(@"error loading state: %@", error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                callback(@{});
+            });
+            return;
+        }
+
+        NSError *jsonError = nil;
+        NSDictionary *dataDictionary = [NSJSONSerialization
+            JSONObjectWithData: data
+            options: NSJSONReadingMutableContainers
+            error: &jsonError
+        ];
+        if (jsonError) {
+            NSLog(@"error parsing state: %@", error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                callback(@{});
+            });
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            callback(dataDictionary);
+        });
+    }];
+    [t resume];
 }
 
 - (void)startUp
 {
 
     NSLog(@"starting server task");
-    
+
     void (^handleData)(NSString*) = ^(NSString* output) {
         // note that these might be called several times
         if ([output rangeOfString:@"server started"].location != NSNotFound) {
-            [[UBWebSocket sharedSocket] open:[self serverUrl:@"ws"]];
-            [self->widgetsStore reset: [self fetchState]];
-            // this will trigger a render
-            [self->screensController syncScreens];
-
+            [self fetchState:^(NSDictionary* state) {
+                [self->widgetsStore reset: state];
+                // this will trigger a render
+                [self->screensController syncScreens:self];
+            }];
         } else if ([output rangeOfString:@"EADDRINUSE"].location != NSNotFound) {
             self->portOffset++;
         }
@@ -158,7 +186,7 @@ int const PORT = 41416;
             ];
         }
     };
-    
+
     shuttingDown = NO;
     keepServerAlive = YES;
     widgetServer = [self
@@ -193,7 +221,7 @@ int const PORT = 41416;
     keepServerAlive = NO;
     [widgetServer terminate];
     [[NSStatusBar systemStatusBar] removeStatusItem:statusBarItem];
-    
+
 }
 
 - (NSStatusItem*)addStatusItemToMenu:(NSMenu*)aMenu
@@ -202,7 +230,7 @@ int const PORT = 41416;
     NSStatusItem* item;
 
     item = [bar statusItemWithLength: NSSquareStatusItemLength];
-    
+
     NSImage *image = [[NSBundle mainBundle] imageForResource:@"status-icon"];
     [image setTemplate:YES];
     [item.button setImage: image];
@@ -216,14 +244,27 @@ int const PORT = 41416;
                        onData:(void (^)(NSString*))dataHandler
                        onExit:(void (^)(NSTask*))exitHandler
 {
+    token = generateToken(kTokenLength256Bits);
+
     NSBundle* bundle     = [NSBundle mainBundle];
     NSString* nodePath   = [bundle pathForResource:@"localnode" ofType:nil];
     NSString* serverPath = [bundle pathForResource:@"server" ofType:@"js"];
-    BOOL loginShell = [[NSUserDefaults standardUserDefaults]
-        boolForKey:@"loginShell"
-    ];
 
     NSTask *task = [[NSTask alloc] init];
+
+    NSPipe *inPipe = [NSPipe pipe];
+    NSFileHandle *fh = [inPipe fileHandleForWriting];
+    NSMutableDictionary *secrets = [[NSMutableDictionary alloc] init];
+    secrets[@"token"] = token;
+    NSError *jsonErr = NULL;
+    NSData *stdinData = [NSJSONSerialization dataWithJSONObject:secrets options:0 error:&jsonErr];
+    if (!stdinData) {
+        NSLog(@"[FATAL] %@", jsonErr);
+        return NULL;
+    }
+    [fh writeData:stdinData];
+    [fh closeFile];
+    [task setStandardInput:inPipe];
 
     [task setStandardOutput:[NSPipe pipe]];
     [task.standardOutput fileHandleForReading].readabilityHandler = ^(NSFileHandle *handle) {
@@ -232,29 +273,30 @@ int const PORT = 41416;
             initWithData:output
             encoding:NSUTF8StringEncoding
         ];
-        
+
         NSLog(@"%@", outStr);
         dispatch_async(dispatch_get_main_queue(), ^{
             dataHandler(outStr);
         });
     };
-    
+
     task.terminationHandler = ^(NSTask *theTask) {
         [theTask.standardOutput fileHandleForReading].readabilityHandler = nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             exitHandler(theTask);
         });
     };
-    
+
     [task setLaunchPath:nodePath];
     [task setArguments:@[
         serverPath,
         @"-d", widgetPath,
-        @"-p", [NSString stringWithFormat:@"%d", PORT + portOffset],
+        @"-p", [NSString stringWithFormat:@"%d", port + portOffset],
         @"-s", [[self getPreferencesDir] path],
-        loginShell ? @"--login-shell" : @""
+        !preferences.enableSecurity ? @"--disable-token" : @"",
+        preferences.loginShell ? @"--login-shell" : @""
     ]];
-    
+
     [task launch];
     return task;
 }
@@ -266,7 +308,7 @@ int const PORT = 41416;
         URLsForDirectory:NSApplicationSupportDirectory
                inDomains:NSUserDomainMask
     ];
-    
+
     return [urls[0]
         URLByAppendingPathComponent:[[NSBundle mainBundle] bundleIdentifier]
                         isDirectory:YES
@@ -278,7 +320,7 @@ int const PORT = 41416;
     // trailing slash required for load policy in UBWindow
     return [NSURL
         URLWithString:[NSString
-            stringWithFormat:@"%@://127.0.0.1:%d/", protocol, PORT+portOffset
+            stringWithFormat:@"%@://127.0.0.1:%d/", protocol, port+portOffset
         ]
     ];
 }
@@ -294,6 +336,7 @@ int const PORT = 41416;
         [windowsController
             updateWindows:screens
             baseUrl: [self serverUrl: @"http"]
+            token:token
             interactionEnabled: preferences.enableInteraction
             forceRefresh: needsRefresh
         ];
@@ -320,7 +363,12 @@ int const PORT = 41416;
 {
     [windowsController closeAll];
     needsRefresh = YES;
-    [screensController syncScreens];
+    [screensController syncScreens:self];
+}
+
+- (void)enableSecurityDidChange
+{
+    [self shutdown:true];
 }
 
 - (IBAction)showPreferences:(id)sender
@@ -345,7 +393,7 @@ int const PORT = 41416;
 - (IBAction)refreshWidgets:(id)sender
 {
     needsRefresh = YES;
-    [screensController syncScreens];
+    [screensController syncScreens:self];
 }
 
 - (IBAction)showDebugConsole:(id)sender
@@ -353,7 +401,7 @@ int const PORT = 41416;
     NSNumber* currentScreen = [[NSScreen mainScreen]
         deviceDescription
     ][@"NSScreenNumber"];
-    
+
     [windowsController showDebugConsolesForScreen:currentScreen];
 }
 
@@ -396,17 +444,17 @@ int const PORT = 41416;
         NSUserDomainMask,
         YES
     );
-    
+
     CFStringRef path = (__bridge CFStringRef)[paths[0]
         stringByAppendingPathComponent:@"/Application Support/Dock/"
     ];
-    
+
     FSEventStreamContext context = {
         0,
         (__bridge void *)(self), NULL, NULL, NULL
     };
     FSEventStreamRef stream;
-    
+
     stream = FSEventStreamCreate(
         NULL,
         &wallpaperSettingsChanged,
@@ -416,7 +464,7 @@ int const PORT = 41416;
         0,
         kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes
     );
-    
+
     FSEventStreamScheduleWithRunLoop(
         stream,
         CFRunLoopGetCurrent(),
@@ -451,6 +499,29 @@ void wallpaperSettingsChanged(
             ];
         }
     }
+}
+
+/*!
+    @function generateToken
+
+    @abstract
+    Returns a base64-encoded @p NSString* of specified number of random bytes.
+
+    @param length
+    A reasonably large, non-zero number representing the length in bytes.
+    For example, a value of 32 would generate a 256-bit token.
+
+    @result Returns @p NSString* on success; panics on failure.
+*/
+NSString* generateToken(uint length) {
+    UInt8 buf[length];
+
+    int error = SecRandomCopyBytes(kSecRandomDefault, length, &buf);
+    if (error != errSecSuccess) {
+        panic("failed to generate token");
+    }
+
+    return [[NSData dataWithBytes:buf length:length] base64EncodedStringWithOptions:0];
 }
 
 #

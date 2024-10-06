@@ -16,42 +16,45 @@
     LSSharedFileListRef loginItems;
 }
 
+static NSString * const kDefaultsEnableSecurity = @"enableSecurity";
+
 @synthesize filePicker;
 
 - (id)initWithWindowNibName:(NSString *)windowNibName
 {
     self = [super initWithWindowNibName:windowNibName];
     if (self) {
-        
+
         NSData* defaultWidgetDir = [self ensureDefaultsWidgetDir];
         NSDictionary *appDefaults = @{
             @"widgetDirectory": defaultWidgetDir,
-            @"enableInteraction": @YES
+            @"enableInteraction": @YES,
+            kDefaultsEnableSecurity: @YES,
         };
         [[NSUserDefaults standardUserDefaults] registerDefaults:appDefaults];
-                
+
         // watch for login item changes
         loginItems = LSSharedFileListCreate(NULL,
                                             kLSSharedFileListSessionLoginItems,
                                             NULL);
-        
+
         LSSharedFileListAddObserver(loginItems,
                                     CFRunLoopGetMain(),
                                     kCFRunLoopCommonModes,
                                     loginItemsChanged,
                                     (__bridge void*)self);
     }
-    
+
     return self;
 }
 
 - (void)windowDidLoad
 {
     [super windowDidLoad];
-    
+
     [[self.window standardWindowButton:NSWindowMiniaturizeButton] setEnabled:NO];
     [[self.window standardWindowButton:NSWindowZoomButton] setEnabled:NO];
-    
+
     [self widgetDirChanged:self.widgetDir];
 }
 
@@ -62,15 +65,15 @@
 - (IBAction)showFilePicker:(id)sender
 {
     NSOpenPanel* openPanel = [NSOpenPanel openPanel];
-    
+
     [openPanel setCanChooseFiles:NO];
     [openPanel setCanChooseDirectories:YES];
-    
+
     [openPanel beginSheetModalForWindow:self.window completionHandler:^(NSInteger result) {
         if (result == NSFileHandlingPanelOKButton) {
             [self setWidgetDir:[openPanel URLs][0]];
         }
-        
+
         [self->filePicker selectItemAtIndex:0];
     }];
 }
@@ -79,7 +82,7 @@
 {
     NSData* widgetDir = [[NSUserDefaults standardUserDefaults]
                          objectForKey:@"widgetDirectory"];
-    
+
     return [NSKeyedUnarchiver unarchiveObjectWithData:widgetDir];
 }
 
@@ -88,7 +91,7 @@
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     [defaults setObject:[NSKeyedArchiver archivedDataWithRootObject:newDir]
                  forKey:@"widgetDirectory"];
-    
+
     [self widgetDirChanged:newDir];
     [(UBAppDelegate *)[NSApp delegate] widgetDirDidChange];
 }
@@ -97,7 +100,7 @@
 {
     NSImage *iconImage = [[NSWorkspace sharedWorkspace] iconForFile:[url path]];
     [iconImage setSize:NSMakeSize(16,16)];
-    
+
     // TODO: see if we could use bindings for this
     [[filePicker itemAtIndex:0] setTitle: [url path]];
     [[filePicker itemAtIndex:0] setImage:iconImage];
@@ -110,14 +113,14 @@
         URLsForDirectory:NSApplicationSupportDirectory
         inDomains:NSUserDomainMask
     ];
-    
+
     NSURL* defaultDir = [urls[0]
         URLByAppendingPathComponent:@"Übersicht/widgets"
         isDirectory:YES
     ];
-    
+
     [self createIfNotExists:defaultDir];
-    
+
     return [NSKeyedArchiver archivedDataWithRootObject:defaultDir];
 }
 
@@ -125,11 +128,11 @@
 {
     NSFileManager* fileManager = [NSFileManager defaultManager];
     BOOL isDir;
-    
+
     if ([fileManager fileExistsAtPath:[defaultWidgetDir path] isDirectory:&isDir] && isDir) {
         return;
     }
-    
+
     NSError* error;
     [fileManager createDirectoryAtURL:defaultWidgetDir
           withIntermediateDirectories:YES
@@ -140,23 +143,23 @@
         NSLog(@"%@", error);
         return;
     }
-    
+
     NSURL* gettinStartedWidget = [[NSBundle mainBundle] URLForResource:@"GettingStarted" withExtension:@"jsx"];
-    
+
     [fileManager copyItemAtURL:gettinStartedWidget
                          toURL:[defaultWidgetDir URLByAppendingPathComponent:@"GettingStarted.jsx"]
                          error:&error];
-    
+
     NSURL* logo = [[NSBundle mainBundle] URLForResource:@"übersicht-logo" withExtension:@"png"];
-    
+
     [fileManager copyItemAtURL:logo
                          toURL:[defaultWidgetDir URLByAppendingPathComponent:@"logo.png"]
                          error:&error];
-    
+
     if (error) {
         NSLog(@"%@", error);
     }
-    
+
 }
 
 #
@@ -177,11 +180,9 @@
     [(UBAppDelegate *)[NSApp delegate] loginShellDidChange];
 }
 
-
 #
 #pragma mark Interaction
 #
-
 
 - (BOOL)enableInteraction
 {
@@ -194,6 +195,22 @@
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     [defaults setObject:@(enabled) forKey:@"enableInteraction"];
     [(UBAppDelegate *)[NSApp delegate] interactionDidChange];
+}
+
+#
+#pragma mark Security
+#
+
+- (BOOL)enableSecurity
+{
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    return [defaults boolForKey:kDefaultsEnableSecurity];
+}
+- (void)setEnableSecurity:(BOOL)enabled
+{
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:enabled forKey:kDefaultsEnableSecurity];
+    [(UBAppDelegate *)[NSApp delegate] enableSecurityDidChange];
 }
 
 #
@@ -222,7 +239,7 @@
             LSSharedFileListItemRemove(loginItems, loginItemRef);
             CFRelease(loginItemRef);
         }
-        
+
     }
 }
 
@@ -230,10 +247,10 @@
 {
     CFArrayRef snapshotRef = LSSharedFileListCopySnapshot(loginItems, NULL);
     NSURL *bundleURL = [NSURL fileURLWithPath:[[NSBundle mainBundle] bundlePath]];
-    
+
     LSSharedFileListItemRef itemRef = NULL;
     CFURLRef itemURLRef;
-    
+
     for (id item in (__bridge NSArray*)snapshotRef) {
         itemRef = (__bridge LSSharedFileListItemRef)item;
         if (LSSharedFileListItemResolve(itemRef, 0, &itemURLRef, NULL) == noErr) {
@@ -244,7 +261,7 @@
         }
         itemRef = NULL;
     }
-    
+
     CFRelease(snapshotRef);
     return itemRef;
 }
@@ -252,7 +269,7 @@
 static void loginItemsChanged(LSSharedFileListRef listRef, void *context)
 {
     UBPreferencesController *controller = (__bridge UBPreferencesController*)context;
-    
+
     [controller willChangeValueForKey:@"startAtLogin"];
     [controller didChangeValueForKey:@"startAtLogin"];
 }
